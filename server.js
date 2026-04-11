@@ -3,9 +3,12 @@ const mysql = require("mysql2");
 const session = require("express-session");
 const bodyParser = require("body-parser");
 
+require("dotenv").config();
+
 const app = express();
 
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.static(__dirname));
 
 app.use(session({
     secret: "secret123",
@@ -14,13 +17,13 @@ app.use(session({
 }));
 
 // DB CONNECTION
-const db = mysql.createConnection({
-    host: "localhost",
-    user: "root",
-    password: "root123",
-    database: "doctor_system"
-});
 
+const db = mysql.createConnection({
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASS,
+    database: process.env.DB_NAME
+});
 db.connect(err => {
     if (err) throw err;
     console.log("✅ DB Connected");
@@ -52,7 +55,7 @@ db.query(`CREATE TABLE IF NOT EXISTS doctor_availability (
 )`);
 
 // LAYOUT
-const layout = (title, content, dashboard=false) => `
+const layout = (title, content, dash=false) => `
 <!DOCTYPE html>
 <html>
 <head>
@@ -69,7 +72,7 @@ body { background:#f4f6f9; }
 </head>
 <body>
 
-${dashboard ? `
+${dash ? `
 <nav class="navbar p-3">
 <div class="container">
 <span class="navbar-brand">Doctor System</span>
@@ -87,20 +90,20 @@ ${dashboard ? `
 </html>
 `;
 
-// LOGIN
+// LOGIN PAGE
 app.get("/", (req, res) => {
     res.send(layout("Login", `
-        <h4 class="text-center mb-3">Doctor Login</h4>
+        <h4 class="text-center">Login</h4>
         <form method="POST" action="/login">
             <input class="form-control mb-2" name="email" placeholder="Email" required>
             <input class="form-control mb-2" type="password" name="password" placeholder="Password" required>
             <button class="btn btn-primary w-100">Login</button>
         </form>
-        <p class="text-center mt-2">New user? <a href="/register">Register</a></p>
+        <p class="text-center mt-2"><a href="/register">Register</a></p>
     `));
 });
 
-// REGISTER
+// REGISTER PAGE
 app.get("/register", (req, res) => {
     res.send(layout("Register", `
         <h4>Create Account</h4>
@@ -114,15 +117,12 @@ app.get("/register", (req, res) => {
     `));
 });
 
-// REGISTER LOGIC
+// REGISTER
 app.post("/register", (req, res) => {
     const { name, email, password } = req.body;
     db.query("INSERT INTO users(name,email,password,role) VALUES(?,?,?,?)",
         [name, email, password, "patient"],
-        () => res.send(layout("Success", `
-            <h4 class="text-success">Registered Successfully</h4>
-            <a href="/" class="btn btn-primary">Login</a>
-        `))
+        () => res.redirect("/")
     );
 });
 
@@ -142,6 +142,19 @@ app.post("/login", (req, res) => {
     );
 });
 
+// API FOR REALTIME
+app.get("/api/appointments", (req, res) => {
+    const user = req.session.user;
+    if (!user) return res.json([]);
+
+    db.query(`SELECT a.*, u.name as doctor FROM appointments a 
+              JOIN users u ON a.doctor_id=u.id 
+              WHERE patient_id=?`,
+        [user.id],
+        (err, result) => res.json(result)
+    );
+});
+
 // DASHBOARD
 app.get("/dashboard", (req, res) => {
     if (!req.session.user) return res.redirect("/");
@@ -152,72 +165,92 @@ app.get("/dashboard", (req, res) => {
         db.query("SELECT * FROM users WHERE role='doctor'", (err, docs) => {
 
             let html = `
-            <div class="row justify-content-center">
-            <div class="col-md-6">
+            <h4>Welcome ${user.name}</h4>
 
-            <h4 class="mb-3">Welcome ${user.name}</h4>
-
-            <div class="card p-3 shadow-sm">
-            <h5>Select Doctor & Date</h5>
-
+            <div class="card p-3 mb-3">
             <form method="GET">
                 <select name="doc" class="form-control mb-2" required>
-                    <option value="">-- Select Doctor --</option>
+                    <option value="">Select Doctor</option>
                     ${docs.map(d => `<option value="${d.id}">Dr. ${d.name}</option>`).join("")}
                 </select>
-
                 <input type="date" name="date" class="form-control mb-2" required>
                 <button class="btn btn-primary w-100">Check Slots</button>
             </form>
             </div>
             `;
 
-            const doc = req.query.doc;
-            const date = req.query.date;
+            const { doc, date } = req.query;
 
             if (doc && date) {
                 db.query("SELECT * FROM doctor_availability WHERE doctor_id=? AND date=?",
                     [doc, date],
                     (err, slots) => {
 
-                        html += "<h5 class='mt-3'>Available Slots</h5>";
+                        html += "<h5>Available Slots</h5>";
 
-                        if (slots.length === 0) {
-                            html += "<p>No slots available</p>";
-                        } else {
-                            slots.forEach(s => {
-                                html += `
-                                <form method="POST" action="/book">
-                                    <input type="hidden" name="doctor" value="${doc}">
-                                    <input type="hidden" name="date" value="${date}">
-                                    <input type="hidden" name="time" value="${s.time}">
-                                    <button class="btn btn-outline-success m-1">${s.time}</button>
-                                </form>`;
+                        slots.forEach(s => {
+                            html += `
+                            <form method="POST" action="/book">
+                                <input type="hidden" name="doctor" value="${doc}">
+                                <input type="hidden" name="date" value="${date}">
+                                <input type="hidden" name="time" value="${s.time}">
+                                <button class="btn btn-outline-success m-1">${s.time}</button>
+                            </form>`;
+                        });
+
+                        // REALTIME UI
+                        html += `
+                        <h5 class="mt-3">Your Appointments</h5>
+                        <div id="appointments"></div>
+
+                        <audio id="sound" src="/notify.mp3"></audio>
+
+                        <script>
+                        let oldData = [];
+
+                        function loadData() {
+                            fetch('/api/appointments')
+                            .then(r=>r.json())
+                            .then(data=>{
+                                let h="";
+
+                                data.forEach(a=>{
+                                    let badge="secondary";
+                                    if(a.status=="approved") badge="success";
+                                    else if(a.status=="rejected") badge="danger";
+                                    else badge="warning";
+
+                                    h+=\`
+                                    <div class="card p-2 mb-2">
+                                        \${a.doctor} | \${a.date} \${a.time}
+                                        <span class="badge bg-\${badge}">\${a.status}</span>
+                                    </div>\`;
+                                });
+
+                                document.getElementById("appointments").innerHTML=h;
+
+                                if(oldData.length){
+                                    data.forEach((a,i)=>{
+                                        if(oldData[i] && oldData[i].status!=a.status){
+                                            document.getElementById("sound").play();
+                                            alert("Status Updated: "+a.status);
+                                        }
+                                    });
+                                }
+
+                                oldData=data;
                             });
                         }
 
-                        db.query(`SELECT a.*, u.name as doctor FROM appointments a 
-                                  JOIN users u ON a.doctor_id=u.id 
-                                  WHERE patient_id=?`,
-                            [user.id],
-                            (err, apps) => {
+                        setInterval(loadData,5000);
+                        loadData();
+                        </script>
+                        `;
 
-                                html += "<h5>Your Appointments</h5>";
-
-                                apps.forEach(a => {
-                                    html += `<div class="card p-2 mb-2">
-                                        ${a.doctor} | ${a.date} ${a.time} | ${a.status}
-                                    </div>`;
-                                });
-
-                                html += "</div></div>";
-
-                                res.send(layout("Patient Dashboard", html, true));
-                            });
+                        res.send(layout("Dashboard", html, true));
                     });
             } else {
-                html += "</div></div>";
-                res.send(layout("Patient Dashboard", html, true));
+                res.send(layout("Dashboard", html, true));
             }
         });
     }
@@ -232,20 +265,16 @@ app.get("/dashboard", (req, res) => {
 
                 let html = `<h4>Welcome Dr. ${user.name}</h4>`;
 
-                if (apps.length === 0) {
-                    html += "<p>No appointments</p>";
-                } else {
-                    apps.forEach(a => {
-                        html += `<div class="card p-2 mb-2">
-                            ${a.patient} | ${a.date} ${a.time} | ${a.status}
-                            <br>
-                            <a href="/approve/${a.id}" class="btn btn-success btn-sm">Approve</a>
-                            <a href="/reject/${a.id}" class="btn btn-danger btn-sm">Reject</a>
-                        </div>`;
-                    });
-                }
+                apps.forEach(a => {
+                    html += `<div class="card p-2 mb-2">
+                        ${a.patient} | ${a.date} ${a.time} | ${a.status}
+                        <br>
+                        <a href="/approve/${a.id}" class="btn btn-success btn-sm">Approve</a>
+                        <a href="/reject/${a.id}" class="btn btn-danger btn-sm">Reject</a>
+                    </div>`;
+                });
 
-                res.send(layout("Doctor Dashboard", html, true));
+                res.send(layout("Doctor", html, true));
             });
     }
 });
@@ -258,6 +287,7 @@ app.post("/book", (req, res) => {
     db.query("SELECT * FROM appointments WHERE doctor_id=? AND date=? AND time=?",
         [doctor, date, time],
         (err, result) => {
+
             if (result.length > 0) {
                 return res.send("Slot already booked");
             }
@@ -286,7 +316,6 @@ app.get("/logout", (req, res) => {
     res.redirect("/");
 });
 
-// START
-app.listen(3000, () => {
-    console.log("🚀 http://localhost:3000");
+app.listen(process.env.PORT || 3000, () => {
+    console.log("🚀 Server running");
 });
