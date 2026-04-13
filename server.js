@@ -3,12 +3,9 @@ const mysql = require("mysql2");
 const session = require("express-session");
 const bodyParser = require("body-parser");
 
-require("dotenv").config();
-
 const app = express();
 
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(express.static(__dirname));
 
 app.use(session({
     secret: "secret123",
@@ -16,17 +13,17 @@ app.use(session({
     saveUninitialized: true
 }));
 
-// DB CONNECTION
-
+// ================= DB =================
 const db = mysql.createConnection({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASS,
-    database: process.env.DB_NAME
+    host: "localhost",
+    user: "root",
+    password: "root123",
+    database: "doctor_system"
 });
+
 db.connect(err => {
-    if (err) throw err;
-    console.log("✅ DB Connected");
+    if (err) console.log("DB Error:", err.message);
+    else console.log("✅ DB Connected");
 });
 
 // TABLES
@@ -47,256 +44,236 @@ db.query(`CREATE TABLE IF NOT EXISTS appointments (
     status VARCHAR(20)
 )`);
 
-db.query(`CREATE TABLE IF NOT EXISTS doctor_availability (
-    id INT AUTO_INCREMENT PRIMARY KEY,
-    doctor_id INT,
-    date DATE,
-    time TIME
-)`);
-
-// LAYOUT
-const layout = (title, content, dash=false) => `
+// ================= UI TEMPLATE =================
+const layout = (title, content) => `
 <!DOCTYPE html>
 <html>
 <head>
 <title>${title}</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+
 <style>
-body { background:#f4f6f9; }
-.login-box { max-width:400px; margin:80px auto; }
-.container { max-width:800px; }
-.card { border-radius:10px; }
-.navbar { background:#0d6efd; }
-.navbar-brand { color:white !important; }
+body {
+    background: linear-gradient(135deg, #4e73df, #1cc88a);
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.card { border-radius: 15px; }
+.form-control { height: 45px; }
+.btn { height: 45px; font-weight: bold; }
+.title { text-align:center; font-weight:bold; margin-bottom:20px; }
 </style>
 </head>
+
 <body>
-
-${dash ? `
-<nav class="navbar p-3">
 <div class="container">
-<span class="navbar-brand">Doctor System</span>
-<a href="/logout" class="btn btn-light btn-sm">Logout</a>
+<div class="row justify-content-center">
+<div class="col-md-5">
+<div class="card shadow p-4">
+${content}
 </div>
-</nav>
-<div class="container mt-4">${content}</div>
-` : `
-<div class="login-box">
-<div class="card shadow p-4">${content}</div>
 </div>
-`}
-
+</div>
+</div>
 </body>
 </html>
 `;
 
-// LOGIN PAGE
+// ================= LOGIN =================
 app.get("/", (req, res) => {
     res.send(layout("Login", `
-        <h4 class="text-center">Login</h4>
+        <h3 class="title">Doctor System</h3>
+
         <form method="POST" action="/login">
-            <input class="form-control mb-2" name="email" placeholder="Email" required>
-            <input class="form-control mb-2" type="password" name="password" placeholder="Password" required>
+            <input class="form-control mb-3" name="email" placeholder="Email" required>
+            <input class="form-control mb-3" type="password" name="password" placeholder="Password" required>
             <button class="btn btn-primary w-100">Login</button>
         </form>
-        <p class="text-center mt-2"><a href="/register">Register</a></p>
+
+        <p class="text-center mt-3">
+            New user? <a href="/register">Register</a>
+        </p>
     `));
 });
 
-// REGISTER PAGE
+// ================= REGISTER PAGE =================
 app.get("/register", (req, res) => {
     res.send(layout("Register", `
-        <h4>Create Account</h4>
+        <h3 class="title">Create Account</h3>
+
         <form method="POST" action="/register">
-            <input class="form-control mb-2" name="name" placeholder="Name" required>
-            <input class="form-control mb-2" name="email" placeholder="Email" required>
-            <input class="form-control mb-2" type="password" name="password" placeholder="Password" required>
+            <input class="form-control mb-3" name="name" placeholder="Full Name" required>
+            <input class="form-control mb-3" name="email" placeholder="Email" required>
+            <input class="form-control mb-3" type="password" name="password" placeholder="Password" required>
             <button class="btn btn-success w-100">Register</button>
         </form>
-        <a href="/">Back to Login</a>
+
+        <p class="text-center mt-3">
+            Already have account? <a href="/">Login</a>
+        </p>
     `));
 });
 
-// REGISTER
+// ================= REGISTER LOGIC =================
 app.post("/register", (req, res) => {
     const { name, email, password } = req.body;
-    db.query("INSERT INTO users(name,email,password,role) VALUES(?,?,?,?)",
-        [name, email, password, "patient"],
-        () => res.redirect("/")
-    );
+
+    // CHECK EMAIL EXISTS
+    db.query("SELECT * FROM users WHERE email=?", [email], (err, result) => {
+
+        if (result.length > 0) {
+            return res.send(layout("Error", `
+                <h4 class="text-danger text-center">❌ Email already exists</h4>
+                <a href="/register" class="btn btn-danger w-100 mt-3">Try Again</a>
+            `));
+        }
+
+        db.query(
+            "INSERT INTO users(name,email,password,role) VALUES(?,?,?,?)",
+            [name, email, password, "patient"],
+            (err) => {
+                if (err) {
+                    return res.send(layout("Error", `
+                        <h4 class="text-danger text-center">❌ Registration Failed</h4>
+                        <a href="/register" class="btn btn-danger w-100 mt-3">Back</a>
+                    `));
+                }
+
+                // SUCCESS MESSAGE + AUTO REDIRECT
+                res.send(layout("Success", `
+                    <div class="text-center">
+                        <h3 class="text-success">✅ Registration Successful</h3>
+                        <p>Redirecting to login...</p>
+                    </div>
+
+                    <script>
+                        setTimeout(() => {
+                            window.location.href = "/";
+                        }, 3000);
+                    </script>
+                `));
+            }
+        );
+    });
 });
 
-// LOGIN
+// ================= LOGIN LOGIC =================
 app.post("/login", (req, res) => {
     const { email, password } = req.body;
-    db.query("SELECT * FROM users WHERE email=? AND password=?",
+
+    db.query(
+        "SELECT * FROM users WHERE email=? AND password=?",
         [email, password],
         (err, result) => {
             if (result.length > 0) {
                 req.session.user = result[0];
                 res.redirect("/dashboard");
             } else {
-                res.send("Invalid Login");
+                res.send(layout("Error", `
+                    <h4 class="text-danger text-center">❌ Invalid Login</h4>
+                    <a href="/" class="btn btn-primary w-100 mt-3">Try Again</a>
+                `));
             }
         }
     );
 });
 
-// API FOR REALTIME
-app.get("/api/appointments", (req, res) => {
-    const user = req.session.user;
-    if (!user) return res.json([]);
-
-    db.query(`SELECT a.*, u.name as doctor FROM appointments a 
-              JOIN users u ON a.doctor_id=u.id 
-              WHERE patient_id=?`,
-        [user.id],
-        (err, result) => res.json(result)
-    );
-});
-
-// DASHBOARD
+// ================= DASHBOARD =================
 app.get("/dashboard", (req, res) => {
     if (!req.session.user) return res.redirect("/");
+
     const user = req.session.user;
 
     // PATIENT
     if (user.role === "patient") {
         db.query("SELECT * FROM users WHERE role='doctor'", (err, docs) => {
 
-            let html = `
-            <h4>Welcome ${user.name}</h4>
+            db.query(
+                `SELECT a.*, u.name as doctor FROM appointments a 
+                 JOIN users u ON a.doctor_id=u.id 
+                 WHERE patient_id=?`,
+                [user.id],
+                (err, apps) => {
 
-            <div class="card p-3 mb-3">
-            <form method="GET">
-                <select name="doc" class="form-control mb-2" required>
-                    <option value="">Select Doctor</option>
-                    ${docs.map(d => `<option value="${d.id}">Dr. ${d.name}</option>`).join("")}
-                </select>
-                <input type="date" name="date" class="form-control mb-2" required>
-                <button class="btn btn-primary w-100">Check Slots</button>
-            </form>
-            </div>
-            `;
+                    res.send(layout("Dashboard", `
+                        <h4>Welcome ${user.name}</h4>
 
-            const { doc, date } = req.query;
+                        <h5>Book Appointment</h5>
+                        <form method="POST" action="/book">
+                            <select class="form-control mb-2" name="doctor" multiple size="5">
+                                ${docs.map(d => `<option value="${d.id}">Dr. ${d.name}</option>`).join("")}
+                            </select>
 
-            if (doc && date) {
-                db.query("SELECT * FROM doctor_availability WHERE doctor_id=? AND date=?",
-                    [doc, date],
-                    (err, slots) => {
+                            <input class="form-control mb-2" type="date" name="date" required>
+                            <input class="form-control mb-2" type="time" name="time" required>
 
-                        html += "<h5>Available Slots</h5>";
+                            <button class="btn btn-success">Book</button>
+                        </form>
 
-                        slots.forEach(s => {
-                            html += `
-                            <form method="POST" action="/book">
-                                <input type="hidden" name="doctor" value="${doc}">
-                                <input type="hidden" name="date" value="${date}">
-                                <input type="hidden" name="time" value="${s.time}">
-                                <button class="btn btn-outline-success m-1">${s.time}</button>
-                            </form>`;
-                        });
+                        <h5 class="mt-4">Your Appointments</h5>
 
-                        // REALTIME UI
-                        html += `
-                        <h5 class="mt-3">Your Appointments</h5>
-                        <div id="appointments"></div>
-
-                        <audio id="sound" src="/notify.mp3"></audio>
-
-                        <script>
-                        let oldData = [];
-
-                        function loadData() {
-                            fetch('/api/appointments')
-                            .then(r=>r.json())
-                            .then(data=>{
-                                let h="";
-
-                                data.forEach(a=>{
-                                    let badge="secondary";
-                                    if(a.status=="approved") badge="success";
-                                    else if(a.status=="rejected") badge="danger";
-                                    else badge="warning";
-
-                                    h+=\`
-                                    <div class="card p-2 mb-2">
-                                        \${a.doctor} | \${a.date} \${a.time}
-                                        <span class="badge bg-\${badge}">\${a.status}</span>
-                                    </div>\`;
-                                });
-
-                                document.getElementById("appointments").innerHTML=h;
-
-                                if(oldData.length){
-                                    data.forEach((a,i)=>{
-                                        if(oldData[i] && oldData[i].status!=a.status){
-                                            document.getElementById("sound").play();
-                                            alert("Status Updated: "+a.status);
-                                        }
-                                    });
-                                }
-
-                                oldData=data;
-                            });
+                        ${apps.length === 0 ? "No appointments" :
+                            apps.map(a => `
+                                <div class="border p-2 mb-2">
+                                    ${a.doctor} | ${a.date} ${a.time} | <b>${a.status}</b>
+                                </div>
+                            `).join("")
                         }
 
-                        setInterval(loadData,5000);
-                        loadData();
-                        </script>
-                        `;
-
-                        res.send(layout("Dashboard", html, true));
-                    });
-            } else {
-                res.send(layout("Dashboard", html, true));
-            }
+                        <a href="/logout" class="btn btn-danger mt-3">Logout</a>
+                    `));
+                }
+            );
         });
     }
 
     // DOCTOR
     else {
-        db.query(`SELECT a.*, u.name as patient FROM appointments a 
-                  JOIN users u ON a.patient_id=u.id 
-                  WHERE doctor_id=?`,
+        db.query(
+            `SELECT a.*, u.name as patient FROM appointments a 
+             JOIN users u ON a.patient_id=u.id 
+             WHERE doctor_id=?`,
             [user.id],
             (err, apps) => {
 
-                let html = `<h4>Welcome Dr. ${user.name}</h4>`;
+                res.send(layout("Doctor", `
+                    <h4>Welcome Dr. ${user.name}</h4>
 
-                apps.forEach(a => {
-                    html += `<div class="card p-2 mb-2">
-                        ${a.patient} | ${a.date} ${a.time} | ${a.status}
-                        <br>
-                        <a href="/approve/${a.id}" class="btn btn-success btn-sm">Approve</a>
-                        <a href="/reject/${a.id}" class="btn btn-danger btn-sm">Reject</a>
-                    </div>`;
-                });
+                    ${apps.length === 0 ? "No appointments" :
+                        apps.map(a => `
+                            <div class="border p-2 mb-2">
+                                ${a.patient} | ${a.date} ${a.time} | <b>${a.status}</b>
+                                <br>
+                                <a href="/approve/${a.id}" class="btn btn-success btn-sm">Approve</a>
+                                <a href="/reject/${a.id}" class="btn btn-danger btn-sm">Reject</a>
+                            </div>
+                        `).join("")
+                    }
 
-                res.send(layout("Doctor", html, true));
-            });
+                    <a href="/logout" class="btn btn-danger mt-3">Logout</a>
+                `));
+            }
+        );
     }
 });
 
-// BOOK
+// ================= BOOK =================
 app.post("/book", (req, res) => {
     const user = req.session.user;
     const { doctor, date, time } = req.body;
 
-    db.query("SELECT * FROM appointments WHERE doctor_id=? AND date=? AND time=?",
-        [doctor, date, time],
-        (err, result) => {
+    const doctors = Array.isArray(doctor) ? doctor : [doctor];
 
-            if (result.length > 0) {
-                return res.send("Slot already booked");
-            }
+    doctors.forEach(doc => {
+        db.query(
+            "INSERT INTO appointments(patient_id,doctor_id,date,time,status) VALUES(?,?,?,?,?)",
+            [user.id, doc, date, time, "pending"]
+        );
+    });
 
-            db.query("INSERT INTO appointments(patient_id,doctor_id,date,time,status) VALUES(?,?,?,?,?)",
-                [user.id, doctor, date, time, "pending"],
-                () => res.redirect("/dashboard")
-            );
-        });
+    res.redirect("/dashboard");
 });
 
 // APPROVE / REJECT
@@ -316,6 +293,7 @@ app.get("/logout", (req, res) => {
     res.redirect("/");
 });
 
-app.listen(process.env.PORT || 3000, () => {
-    console.log("🚀 Server running");
+// START
+app.listen(3000, () => {
+    console.log("🚀 http://localhost:3000");
 });
